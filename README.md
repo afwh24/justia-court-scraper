@@ -1,107 +1,66 @@
-# U.S. Federal District Court Legal Data Acquisition Pipeline
+# Justia U.S. Federal District Court Scraper
 
-A scalable legal document acquisition pipeline for scraping, downloading, and structuring U.S. Federal District Court opinions from [Justia Law](https://law.justia.com/cases/) into machine-readable datasets for legal AI and NLP research.
+A large-scale hierarchical web scraping pipeline that collects U.S. Federal District Court case documents from [Justia Law](https://law.justia.com) for legal AI research. Built during a six-month AI Engineer internship at HTX, Singapore's national defence-tech agency.
 
----
+## Scale
 
-## Overview
+Over **860,000 U.S. Federal District Court cases** collected across all fifty U.S. states and the District of Columbia.
 
-This project automates the large-scale collection of U.S. Federal District Court case records from Justia Law. The pipeline crawls court records across a four-level navigation hierarchy, extracts structured case information from both PDF and HTML sources, and produces metadata-rich JSONL datasets for downstream legal AI applications.
+## How it works
 
-The extracted legal documents can be used for:
+### Navigation
 
-- Legal NLP research
-- LLM training and fine-tuning
-- Retrieval-Augmented Generation (RAG)
-- Legal document retrieval and search
-- Legal AI dataset preparation
+The scraper follows a four-level hierarchy:
 
----
-
-## Pipeline Architecture
-
-1. Crawl Justia Law across a four-level navigation hierarchy: State to Year to Court to Case
-2. Extract case metadata from each case page
-3. Download opinion PDF if available for download
-4. If PDF is not available, extract HTML text content instead
-5. Store files using URL-based hashed filenames
-6. Structure extracted information into JSONL records
-7. Save outputs with error logging
-
----
-
-## Features
-
-### Hierarchical Court Scraping
-- Four-level navigation crawling: State to Year to Court to Case
-- Automated scraping of U.S. Federal District Court opinions from Justia Law
-- Case metadata extraction from each page level
-- PDF download automation where PDFs are available for download
-- HTML text extraction as fallback where PDFs are unavailable
-- URL-based hashed file storage for organised and reproducible output
-
-### HTML Processing
-- BeautifulSoup-based HTML parsing and text extraction
-- Structured text cleaning and normalisation
-
-### Dataset Generation
-- JSONL dataset outputs
-- Metadata-rich legal records
-- Reproducible document organisation
-
-### Fault Tolerance
-- Retry logic with exponential backoff
-- Duplicate detection to avoid reprocessing
-- Resume support for interrupted runs
-- Robust error handling for HTTP 403, 410, and 503 errors, TLS failures, read timeouts, and inconsistent web page structures
-
----
-
-## Dataset Schema
-
-Each JSONL record contains the following fields:
-
-```json
-{
-  "url": "https://law.justia.com/cases/...",
-  "title": "United States v. Example",
-  "text": "Full extracted text of the court opinion..."
-}
+```
+State → Year → Court → Case
 ```
 
----
+For each state, the scraper discovers available years, then within each year discovers courts, then within each court discovers individual case listings, following pagination links where a court has more cases than fit on a single listing page.
 
-## Technical Challenges
+### Extraction
 
-- **HTTP 403, 410, and 503 responses** — Handled via retry logic and exponential backoff
-- **TLS and connection failures** — Managed with configurable retry thresholds and error recovery
-- **Read timeouts** — Handled with timeout detection and automatic retries
-- **Missing or inconsistent web page structures** — Managed through robust error handling and graceful degradation
-- **Duplicate records** — Detected and skipped via duplicate detection mechanisms
-- **Interrupted runs** — Supported via resume capabilities without reprocessing completed records
+For each case page, the scraper checks whether a downloadable PDF opinion is available:
 
----
+- **PDF available** → downloaded directly as the primary method
+- **No PDF available** → case text extracted directly from the HTML, using a two-tier fallback to locate the relevant content section (page layouts are not fully consistent across the site)
 
-## Technologies Used
+Each text-extracted case is written to a JSONL file (one file per state-year combination) with three fields: `url`, `title`, `text`.
 
-- **Language:** Python
-- **HTML Parsing:** BeautifulSoup
-- **HTTP Requests:** Requests
-- **Output Format:** JSONL
-- **Source:** [Justia Law — Federal Cases](https://law.justia.com/cases/)
+### Deduplication
 
----
+Two separate mechanisms handle deduplication for the two output types:
 
-## Applications
+- **JSONL case records**: the set of case URLs already present in a given state-year's output file is loaded into memory at the start of processing that year; any URL already in the set is skipped
+- **PDF downloads**: each PDF's filename is derived from a hash of its source URL, and downloads are skipped if a file already exists at that path
 
-- Legal AI systems
-- Court opinion analysis
-- Legal document retrieval
-- LLM training datasets
-- Legal AI research
+### Resilience
 
----
+- Retry logic with **exponential backoff** on transient failures
+- Explicit handling for HTTP 410 (resource permanently removed) and HTTP 404 (invalid URL) — both logged and skipped without retrying
+- Read timeouts explicitly caught and retried with the same backoff strategy
+- All other failures, after exhausting retries, are logged with a timestamp to an error file; the scraper continues processing rather than terminating
 
-## Notes
+### Parallelism
 
-This pipeline was built during an AI Engineer internship at the Home Team Science and Technology Agency (HTX), Singapore. Extracted datasets are not publicly available.
+Given the scale of the task, the workload was manually partitioned by U.S. state/district into separate groups, allowing different subsets to be processed in parallel across separate runs rather than relying on multithreading or async concurrency within a single process.
+
+### Post-processing
+
+- Empty JSONL files (state-year combinations with zero valid records) are automatically deleted
+- A separate utility reorganises completed output per state: JSONL files are moved into a dedicated `jsonl/` subfolder, PDF files into a dedicated `pdf/` subfolder (with filenames prefixed by year to avoid collisions across years), and the now-empty year-level folders are removed
+
+## Tech stack
+
+Python, requests, BeautifulSoup, JSONL
+
+## Output structure
+
+```
+output/
+└── <State>/
+    ├── jsonl/
+    │   └── _<Year>.jsonl
+    └── pdf/
+        └── <Year>_<hash>.pdf
+```
